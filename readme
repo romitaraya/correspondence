@@ -1,0 +1,2061 @@
+*&---------------------------------------------------------------------*
+*& Report /KGO/R_FI_AR_CORRESPONDENCE
+*&---------------------------------------------------------------------*
+*^ Program Title : Correspondence Program to send attachments in mail
+*^ Written By           : Marina Hota
+*^ Date Written         : 14-September-2020
+*^ Application Area     : GFIN
+*^ Transport            : D49K907224
+*^ T-Code               : /KGO/FI_AR_CORRESPD
+**------------------------------------------------------------------------------------------------**
+*^  Maintainance History (latest on top)
+*^  Date : DD-MMM-YYYY   Author : XXXXXXXX   Transport :XXXXXXXXX
+*^  Description of Change :
+****************************************************************************************************
+REPORT /kgo/r_fi_ar_correspondence MESSAGE-ID /kgo/fi_msg_class.
+
+
+INCLUDE /kgo/i_fi_ar_corres_top.
+INCLUDE /kgo/i_fi_ar_corres_s01.
+INCLUDE /kgo/i_fi_ar_corres_f01.
+
+AT SELECTION-SCREEN.
+
+  PERFORM sub_data_validate. "Validation of mandatory field values
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_bukrs.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_bukrs. "Search help for Company Code
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_doc_no-low.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_inv. "Search help for Invoice Document number
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_cc-low.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_kostl. "Search help for Global CC
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_rrf_no-low.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_rrf. "Search help for RRF No.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_brf_no-low.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_brf. "Search help for BRF No.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR s_mf-low.
+
+  REFRESH gt_ret.
+  PERFORM sub_f4_mf.  "Search help for Requesting MF
+
+START-OF-SELECTION.
+
+  PERFORM sub_fetch_data. " Fetching data for ALV
+
+  IF gt_final IS NOT INITIAL.
+    PERFORM sub_display_alv.
+  ELSE.
+    MESSAGE i000 WITH TEXT-023.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+
+
+
+*&---------------------------------------------------------------------*
+*& Include          /KGO/I_FI_AR_CORRES_F01
+*&---------------------------------------------------------------------*
+*^ Program Title : Correspondence Program to send attachments in a ZIP file
+*^ Written By           : Marina Hota
+*^ Date Written         : 14-September-2020
+*^ Application Area     : GFIN
+*^ Transport            : D49K907224
+*^ T-Code               : /KGO/FI_AR_CORRESPD
+**------------------------------------------------------------------------------------------------**
+*^  Maintainance History (latest on top)
+*^  Date : DD-MMM-YYYY   Author : XXXXXXXX   Transport :XXXXXXXXX
+*^  Description of Change :
+*********************************************************************************************************
+*&---------------------------------------------------------------------*
+*& Form SUB_DATA_VALIDATE
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_data_validate .
+
+  IF p_bukrs IS INITIAL.
+    MESSAGE TEXT-004 TYPE 'E'.
+  ENDIF.
+
+  IF p_gjahr IS INITIAL.
+    MESSAGE TEXT-006 TYPE 'E'.
+  ENDIF.
+
+  IF s_mf IS NOT INITIAL.
+    IF s_pgrp IS INITIAL.
+      MESSAGE TEXT-007 TYPE 'E'.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_DOWNLOAD_ZIP_FILE
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*      -->P_GT_ATT  text
+*&---------------------------------------------------------------------*
+FORM sub_download_zip_file.
+
+  CONSTANTS: lc_ext    TYPE char4 VALUE '.zip'.
+
+
+  DATA: lv_zip_name       TYPE string.
+
+
+  CONCATENATE gv_doc '_' p_bukrs '_' p_gjahr '_' sy-datum '_' sy-uzeit lc_ext INTO lv_zip_name.
+  gv_filepath = p_path.
+
+  IF sy-opsys = 'UNIX'.
+    CONCATENATE gv_filepath '/' lv_zip_name INTO gv_filepath.
+  ELSE.
+    CONCATENATE gv_filepath '\' lv_zip_name INTO gv_filepath.
+  ENDIF.
+
+  IF gt_bin[] IS NOT INITIAL.
+    "Download file in presentation server.
+    CALL FUNCTION 'GUI_DOWNLOAD'
+      EXPORTING
+        filename                = gv_filepath
+        filetype                = 'BIN'
+        confirm_overwrite       = 'X'
+      TABLES
+        data_tab                = gt_bin[]
+      EXCEPTIONS
+        file_write_error        = 1
+        no_batch                = 2
+        gui_refuse_filetransfer = 3
+        invalid_type            = 4
+        no_authority            = 5
+        unknown_error           = 6
+        header_not_allowed      = 7
+        separator_not_allowed   = 8
+        filesize_not_allowed    = 9
+        header_too_long         = 10
+        dp_error_create         = 11
+        dp_error_send           = 12
+        dp_error_write          = 13
+        unknown_dp_error        = 14
+        access_denied           = 15
+        dp_out_of_memory        = 16
+        disk_full               = 17
+        dp_timeout              = 18
+        file_not_found          = 19
+        dataprovider_exception  = 20
+        control_flush_error     = 21.
+    IF sy-subrc = 0.
+
+    ENDIF.
+  ENDIF.
+
+  CLEAR: lv_zip_name, gv_filepath.
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_SEND_MAIL
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*      -->P_GT_ATT  text
+*&---------------------------------------------------------------------*
+FORM sub_send_mail.
+
+  CONSTANTS: lc_9921 TYPE char4 VALUE '9921',
+             lc_c    TYPE char1 VALUE 'C'. "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+  DATA: lv_zname   TYPE string,
+        lv_dmbtr   TYPE char16,
+        lv_entity  TYPE /kgo/fi_mf_gf,
+        lv_attfile TYPE so_obj_des,
+        lv_uname   TYPE char12,
+        lv_count   TYPE sy-tabix,
+        lt_att     TYPE STANDARD TABLE OF gty_att, "Added for SCTASK1927381 by MARINAHOTA on 05/02/2021
+        ls_att     TYPE gty_att. "Added for SCTASK1927381 by MARINAHOTA on 05/02/2021
+
+
+  lv_uname = gv_uname.
+  SELECT spras, mnr, ktx FROM t247
+    INTO TABLE @DATA(lt_months)
+    WHERE spras = 'E'.
+
+  LOOP AT gt_process INTO gs_process.
+
+*Start of change for SCTASK1927381 by MARINAHOTA on 05/02/2021
+    IF gs_process-company_code = '9901'.
+*Start of comment for INC01495550 by MARINAHOTA on 14/04/2021
+*      IF lo_zip IS NOT BOUND.
+*        CREATE OBJECT lo_zip.
+*      ENDIF.
+*      gv_filename = gs_process-filename.
+*
+*      lo_zip->add(
+*        EXPORTING
+*          name           =  gv_filename   " Name (Case-Sensitive)
+*          content        =  gs_process-value ).
+*End of comment for INC01495550 by MARINAHOTA on 14/04/2021
+      gv_doc = gs_process-fi_doc_no. "Changed for INC01399209 by MARINAHOTA on 28/01/2021
+
+    ELSE.
+      gv_doc = gs_process-xblnr. "Changed for INC01399209 by MARINAHOTA on 28/01/2021
+    ENDIF.
+    MOVE-CORRESPONDING gs_process TO ls_att.
+    APPEND ls_att TO lt_att.
+    CLEAR: ls_att.
+
+
+
+*End of change for SCTASK1927381 by MARINAHOTA on 05/02/2021
+    AT END OF fi_doc_no.
+      DATA(lv_flag) = abap_true.
+    ENDAT.
+
+    IF lv_flag = abap_true.
+      IF lo_document IS NOT BOUND.
+        CREATE OBJECT: lo_document.
+        CLASS cl_bcs DEFINITION LOAD.
+        lo_send_request = cl_bcs=>create_persistent( ).
+      ENDIF.
+
+      CLEAR: lv_dmbtr, gv_mail_sub.
+
+      CONCATENATE gv_doc p_bukrs p_gjahr INTO gv_zip_name SEPARATED BY '_'.
+      WRITE gs_process-inv_amt TO lv_dmbtr.
+      CONDENSE lv_dmbtr.
+
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        CONCATENATE TEXT-071 gv_doc TEXT-028 lv_dmbtr gs_process-currency INTO gv_mail_sub SEPARATED BY space.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+        CONCATENATE TEXT-038 gv_doc TEXT-028 lv_dmbtr gs_process-currency INTO gv_mail_sub SEPARATED BY space.
+      ENDIF.  "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+      gs_text-line = '<html> <body style="background-color:#FFFFFF;" "font-family:arial, verdana, courier" "font-size:20px" >'.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      gs_text-line = TEXT-040.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        CONCATENATE '<BR><BR>'TEXT-069 INTO gs_text-line.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+        CONCATENATE '<BR><BR>'TEXT-039 INTO gs_text-line.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ENDIF. "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+
+      gs_text-line = '<BR><BR>'.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      gs_text-line = '<table style="MARGIN: 10px" width = "98%" border="1px solid #000000" align="left"> '.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CLEAR: lv_entity.
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input  = gs_process-entity
+        IMPORTING
+          output = lv_entity.
+
+      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Account#</td> <td width="10%" style="border: 1px solid #000000;">' lv_entity '</td></tr>' INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">KPMG Entity Name</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-entity_name '</td></tr>' INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Country</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-landx '</td></tr>' INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        IF gs_process-company_code = lc_9921.
+          CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Credit Note#</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-xblnr '</td></tr>' INTO gs_text.
+        ELSE.
+          CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Credit Note#</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-fi_doc_no '</td></tr>' INTO gs_text.
+        ENDIF.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+*Start of change for INC01399209 by MARINAHOTA on 28/01/2021
+        IF gs_process-company_code = lc_9921.
+          CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Invoice#</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-xblnr '</td></tr>' INTO gs_text.
+*End of change for INC01399209 by MARINAHOTA on 28/01/2021
+        ELSE.
+          CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Invoice#</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-fi_doc_no '</td></tr>' INTO gs_text.
+        ENDIF.
+      ENDIF. "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      DATA(lv_d) = gs_process-inv_date+6(2).
+      DATA(lv_m) = gs_process-inv_date+4(2).
+      DATA(lv_y) = gs_process-inv_date+2(2).
+      READ TABLE lt_months INTO DATA(ls_months) WITH KEY mnr = lv_m.
+      IF sy-subrc = 0.
+        CONCATENATE lv_d ls_months-ktx lv_y INTO DATA(lv_date) SEPARATED BY '-'.
+      ENDIF.
+
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Credit Note Date</td> <td width="10%" style="border: 1px solid #000000;">' lv_date '</td></tr>' INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+        CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Invoice Date</td> <td width="10%" style="border: 1px solid #000000;">' lv_date '</td></tr>' INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ENDIF.  "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Credit Note Amount</td> <td width="10%" style="border: 1px solid #000000;">' lv_dmbtr '</td></tr>' INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+        CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Invoice Amount</td> <td width="10%" style="border: 1px solid #000000;">' lv_dmbtr '</td></tr>' INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ENDIF.  "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Currency</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-currency '</td></tr>' INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">BRF Reference</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-brf_no '</td></tr>' INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+*Start of comment for INC01495550 by MARINAHOTA on 14/04/2021
+*      CONCATENATE '<tr> <td width="4%" style="border: 1px solid #000000;">Invoice Description</td> <td width="10%" style="border: 1px solid #000000;">' gs_process-inv_desc '</td></tr>' INTO gs_text.
+*      APPEND gs_text TO gt_text.
+*      CLEAR gs_text.
+*End of comment for INC01495550 by MARINAHOTA on 14/04/2021
+
+      gs_text-line = '</table> '.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CONCATENATE '<BR><BR>' TEXT-041 INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+*Start of change for INC01526515 by MARINAHOTA on 11/05/2021
+      IF gs_process-transaction_type(1) = lc_c.
+
+        CONCATENATE '<BR><BR>' TEXT-070 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ELSE.
+*End of change for INC01526515 by MARINAHOTA on 11/05/2021
+        CONCATENATE '<BR><BR>' TEXT-042 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ENDIF. "Added for INC01526515 by MARINAHOTA on 11/05/2021
+
+      CONCATENATE '<BR><BR>' TEXT-043 INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      CONCATENATE '<BR><BR><BR>' TEXT-044 INTO gs_text.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+      IF gs_process-company_code = lc_9921. "Added for INC01495550 by MARINAHOTA on 14/04/2021
+
+        CONCATENATE '<BR>' TEXT-045 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-046 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-047 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-048 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-049 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-053 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+*Start of change for INC01495550 by MARINAHOTA on 14/04/2021
+      ELSE.
+
+        CONCATENATE '<BR>' TEXT-064 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-065 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-066 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-067 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+
+        CONCATENATE '<BR>' TEXT-068 INTO gs_text.
+        APPEND gs_text TO gt_text.
+        CLEAR gs_text.
+      ENDIF.
+*End of change for INC01495550 by MARINAHOTA on 14/04/2021
+
+      gs_text-line = '</body></html>'.
+      APPEND gs_text TO gt_text.
+      CLEAR gs_text.
+
+*Create Email document
+      lo_document = cl_document_bcs=>create_document( "create document
+      i_type = 'HTM'
+      i_text =  gt_text
+      i_subject = gv_mail_sub ).
+
+*Start of change for SCTASK1927381 by MARINAHOTA on 05/02/2021
+*Start of comment for INC01495550 by MARINAHOTA on 14/04/2021
+*      IF gs_process-company_code = '9901'.
+*
+*        gv_zip_content = lo_zip->save( ).
+*        IF gv_zip_content IS NOT INITIAL.
+*
+*          CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+*            EXPORTING
+*              buffer        = gv_zip_content
+*            IMPORTING
+*              output_length = gv_len
+*            TABLES
+*              binary_tab    = gt_bin.
+*          IF gt_bin IS NOT INITIAL.
+*
+*            TRY.
+*                lo_document->add_attachment( EXPORTING
+*                                                i_attachment_type = 'ZIP'
+*                                                i_attachment_subject = gv_zip_name
+*                                                i_att_content_hex = gt_bin  ).
+*
+*              CATCH cx_sy_ref_is_initial.
+*            ENDTRY.
+*          ENDIF.
+*        ENDIF.
+*      ELSE.
+*End of comment for INC01495550 by MARINAHOTA on 14/04/2021
+* Create Attachment
+      READ TABLE lt_att WITH KEY company_code = gs_process-company_code
+                                 gjahr = gs_process-gjahr
+                                 fi_doc_no = gs_process-fi_doc_no
+                                 TRANSPORTING NO FIELDS BINARY SEARCH.
+      IF sy-subrc IS INITIAL.
+
+        DATA(lv_tabix) = sy-tabix.
+        LOOP AT lt_att INTO DATA(ls_temp) FROM lv_tabix.
+          IF ls_temp-company_code <> gs_process-company_code
+              OR ls_temp-gjahr <> gs_process-gjahr
+              OR ls_temp-fi_doc_no <> gs_process-fi_doc_no.
+            EXIT.
+          ENDIF.
+          IF ls_temp-value IS NOT INITIAL.
+
+            lv_attfile = ls_temp-filename.
+
+            CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+              EXPORTING
+                buffer        = ls_temp-value
+              IMPORTING
+                output_length = gv_len
+              TABLES
+                binary_tab    = gt_bin.
+            IF gt_bin IS NOT INITIAL.
+              TRY.
+                  lo_document->add_attachment( EXPORTING
+                                                  i_attachment_type = 'BIN'
+                                                  i_attachment_subject = lv_attfile
+                                                  i_att_content_hex = gt_bin  ).
+
+                CATCH cx_sy_ref_is_initial.
+              ENDTRY.
+            ENDIF.
+          ENDIF.
+          CLEAR : gs_recpt, lv_attfile, ls_temp.
+          REFRESH gt_bin.
+        ENDLOOP.
+      ENDIF.
+
+*      ENDIF. "Commented for INC01495550 by MARINAHOTA on 14/04/2021
+
+
+*      ENDIF.
+*End of change for SCTASK1927381 by MARINAHOTA on 05/02/2021
+
+      lo_send_request->set_document( lo_document ).
+      IF sy-subrc = 0.
+
+        TRY.
+            lo_sender = cl_sapuser_bcs=>create( lv_uname ).
+*start of changes done for multiple recipient
+*            gv_mail_id = gs_process-smtp_addr.
+*            lo_recipient = cl_cam_address_bcs=>create_internet_address( gv_mail_id ).
+*end of changes done for multiple recipient
+* Set sender to send request
+            lo_send_request->set_sender(
+            EXPORTING
+            i_sender = lo_sender ).
+          CATCH cx_address_bcs.
+****Catch exception here
+        ENDTRY.
+
+*Start of change for segregating 'TO' & 'CC' recipients by MARINAHOTA on 13/01/2021
+
+*        TRY.
+*            gv_mail_id = gs_process-smtp_addr.
+*            lo_recipient = cl_cam_address_bcs=>create_internet_address( gv_mail_id ).
+*
+*            lo_send_request->add_recipient(
+*                EXPORTING
+*                i_recipient = lo_recipient
+*                i_express = 'X' ).
+*          CATCH cx_send_req_bcs.
+***Catch exception here
+*        ENDTRY.
+*End of change for segregating 'TO' & 'CC' recipients by MARINAHOTA on 13/01/2021
+
+*Start of change for INC01401549 by MARINAHOTA on 10/02/2021
+
+        TRY.
+            gv_mail_id = gv_sender.
+            TRY.  "Added for INC01538357 by MARINAHOTA on 25/05/2021
+                lo_recipient = cl_cam_address_bcs=>create_internet_address( gv_mail_id ).
+*Start of change for INC01538357 by MARINAHOTA on 25/05/2021
+              CATCH cx_address_bcs.
+****Catch exception here
+            ENDTRY.
+*End of change for INC01538357 by MARINAHOTA on 25/05/2021
+            lo_send_request->add_recipient(
+                EXPORTING
+                i_recipient = lo_recipient
+                i_express = 'X'
+                i_copy = 'X' ).
+          CATCH cx_send_req_bcs.
+**Catch exception here
+        ENDTRY.
+*End of change for INC01401549 by MARINAHOTA on 10/02/2021
+
+*start of changes done for multiple recipient
+        READ TABLE gt_recpt  WITH KEY
+                       company_code = gs_process-company_code
+                       gjahr = gs_process-gjahr
+                       fi_doc_no = gs_process-fi_doc_no TRANSPORTING NO FIELDS BINARY SEARCH.
+        IF sy-subrc IS INITIAL.
+          CLEAR: gv_mail_id.
+          DATA(lv_index) = sy-tabix.
+          LOOP AT gt_recpt INTO gs_recpt FROM lv_index.
+            IF gs_recpt-company_code <> gs_process-company_code
+                OR gs_recpt-gjahr <> gs_process-gjahr
+                OR gs_recpt-fi_doc_no <> gs_process-fi_doc_no.
+              EXIT.
+            ENDIF.
+
+            TRY.
+                gv_mail_id = gs_recpt-addl_cc_emails.
+                CONDENSE gv_mail_id NO-GAPS.
+                TRY. "Added for INC01538357 by MARINAHOTA on 25/05/2021
+                    lo_recipient = cl_cam_address_bcs=>create_internet_address( gv_mail_id ).
+*Start of change for INC01538357 by MARINAHOTA on 25/05/2021
+                  CATCH cx_address_bcs.
+**Catch exception here
+                ENDTRY.
+*End of change for INC01538357 by MARINAHOTA on 25/05/2021
+
+                lo_send_request->add_recipient(
+                    EXPORTING
+                    i_recipient = lo_recipient
+                    i_express = 'X' ).
+*                    i_copy = 'X' ).
+              CATCH cx_send_req_bcs.
+**Catch exception here
+            ENDTRY.
+
+            CLEAR : gs_recpt.
+          ENDLOOP.
+        ENDIF.
+*end of changes for multiple recipient
+*        TRY.
+*            gv_mail_id = gs_process-smtp_addr.
+*            lo_recipient = cl_cam_address_bcs=>create_internet_address( gv_mail_id ).
+*
+*            lo_send_request->add_recipient(
+*                EXPORTING
+*                i_recipient = lo_recipient
+*                i_express = 'X' ).
+*          CATCH cx_send_req_bcs.
+***Catch exception here
+*        ENDTRY.
+
+        IF sy-subrc = 0.
+
+*Set immediate sending
+          TRY.
+              CALL METHOD lo_send_request->set_send_immediately
+                EXPORTING
+                  i_send_immediately = 'X'.
+            CATCH cx_send_req_bcs .
+**Catch exception here
+          ENDTRY.
+
+** Send email
+          TRY.
+              lo_send_request->send(
+              EXPORTING
+              i_with_error_screen = 'X' ).
+              COMMIT WORK.
+              IF sy-subrc = 0.
+*            MESSAGE TEXT-029 TYPE 'S'.
+              ENDIF.
+            CATCH cx_send_req_bcs.
+*catch exception here
+          ENDTRY.
+        ENDIF.
+
+      ENDIF.
+
+      IF sy-subrc = 0.
+        UPDATE /kgo/fi_ar_invce SET sent = 'X'
+        WHERE bukrs = gs_process-company_code
+        AND belnr = gs_process-fi_doc_no
+        AND gjahr = gs_process-gjahr
+        AND cop_loa = 'INV'.
+        IF sy-subrc = 0.
+          COMMIT WORK AND WAIT.
+        ENDIF.
+      ENDIF.
+      CLEAR: lo_send_request, lo_recipient, lo_sender, lo_document, lo_zip.
+      CLEAR: gv_mail_id, lv_index.
+      REFRESH: gt_text, lt_att. "Added for SCTASK1927381 by MARINAHOTA on 05/02/2021
+    ENDIF.
+
+    CLEAR: gs_process, lv_flag.
+  ENDLOOP.
+
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_FETCH_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_fetch_data .
+
+  CONSTANTS: lc_cop         TYPE char3 VALUE 'COP',
+             lc_con         TYPE char3 VALUE 'CON',
+             lc_loa         TYPE char3 VALUE 'LOA',
+             lv_commit_flag TYPE char1 VALUE 'X',
+             lc_ext         TYPE char4 VALUE '.pdf'.
+
+  DATA: lt_temp         TYPE STANDARD TABLE OF gty_final,
+        lv_inv_filename TYPE char100,
+        ls_output       TYPE fpformoutput,
+        lv_progn        TYPE char40,
+        lt_bkorm        TYPE STANDARD TABLE OF bkorm,
+        ls_bkorm        TYPE bkorm.
+
+  RANGES : s_belnr FOR gv_doc_no.
+
+
+  REFRESH: gt_final.
+  FREE MEMORY ID 'COMMIT'.
+
+  SELECT SINGLE progn FROM  t048b INTO lv_progn
+                        WHERE event = 'SAPPL'
+                        AND   bukrs = p_bukrs.
+  IF sy-subrc = 0.
+
+  ENDIF.
+
+*Start of Change for validation By ABHISHEKB on 29/09/2021
+*        SELECT belnr, gjahr, bukrs
+*         FROM /kgo/fi_ar_invce
+*         INTO TABLE @DATA(lt_validate)
+*         WHERE belnr IN @s_doc_no
+*          AND bukrs EQ @p_bukrs.
+*        IF sy-subrc EQ 0.
+*          LOOP AT lt_validate ASSIGNING FIELD-SYMBOL(<lfs_validate>).
+*            IF p_bukrs NE <lfs_validate>-bukrs.
+*            MESSAGE i000 WITH TEXT-073.
+*               LEAVE LIST-PROCESSING.
+*            ENDIF.
+*          ENDLOOP.
+*          ELSE.
+*            MESSAGE i000 WITH TEXT-073.
+*        ENDIF.
+*      SELECT gjahr, belnr
+*         FROM /kgo/fi_ar_invce
+*         INTO TABLE @DATA(lt_validate1)
+*           WHERE belnr IN @s_doc_no
+*           AND gjahr EQ @p_gjahr.
+*        IF sy-subrc = 0.
+*          LOOP AT lt_validate1 ASSIGNING FIELD-SYMBOL(<lfs_validate1>).
+*            IF <lfs_validate1>-gjahr NE p_gjahr.
+*            MESSAGE i000 WITH TEXT-074.   "Company Code
+*               LEAVE LIST-PROCESSING.
+*          ENDIF.
+*         ENDLOOP.
+*         ELSE.
+*           MESSAGE i000 WITH TEXT-074.
+*        ENDIF.
+*  IF s_doc_no IS NOT INITIAL.
+*    DESCRIBE TABLE s_doc_no[] LINES DATA(lv_line).
+*    SELECT a~company_code, a~gjahr, b~fi_doc_no
+*         FROM /kgo/fi_mf_brfh AS a INNER JOIN /kgo/fi_mf_brfl AS b ON a~company_code = b~company_code AND a~brf_no = b~brf_no
+*          INTO TABLE @DATA(lt_validate2)
+**           WHERE bukrs EQ @p_bukrs
+*           WHERE fi_doc_no IN @s_doc_no.
+**           AND gjahr EQ @p_gjahr.
+*    IF sy-subrc <> 0.
+*      MESSAGE i000 WITH TEXT-080.   "Belnr
+*      LEAVE LIST-PROCESSING.
+*    ELSE.
+*      DESCRIBE TABLE lt_validate2 LINES DATA(lv_line1).
+*      IF lv_line EQ lv_line1.
+*        LOOP AT lt_validate2 ASSIGNING FIELD-SYMBOL(<lfs_validate2>).
+*          IF <lfs_validate2> IS ASSIGNED.
+*            IF  p_bukrs NE <lfs_validate2>-company_code AND p_gjahr NE <lfs_validate2>-gjahr.
+*              MESSAGE i000 WITH TEXT-079.
+*              LEAVE LIST-PROCESSING.
+*            ELSEIF  p_bukrs NE <lfs_validate2>-company_code.
+*              MESSAGE i000 WITH TEXT-074.   "Company Code
+*              LEAVE LIST-PROCESSING.
+*            ELSE.
+*              IF p_gjahr NE <lfs_validate2>-gjahr.
+*                MESSAGE i000 WITH TEXT-073.   "Fiscal Year
+*                LEAVE LIST-PROCESSING.
+*              ENDIF.
+*            ENDIF.
+*          ENDIF.
+*        ENDLOOP.
+*      ELSE.
+*        MESSAGE i000 WITH TEXT-081.   "Belnr Series
+*        LEAVE LIST-PROCESSING.
+*      ENDIF.
+*    ENDIF.
+*  ENDIF.
+*  IF s_brf_no IS NOT INITIAL.
+*    SELECT company_code,gjahr, brf_no FROM /kgo/fi_mf_brfh
+*      INTO TABLE @DATA(lt_validate3)
+*      WHERE brf_no IN @s_brf_no.
+*    IF sy-subrc <> 0.
+*      MESSAGE i000 WITH TEXT-083.
+*      LEAVE LIST-PROCESSING.
+*    ELSE.
+*      LOOP AT lt_validate3 ASSIGNING FIELD-SYMBOL(<lfs_validate3>).
+*        IF p_bukrs NE <lfs_validate3>-company_code.
+*          MESSAGE i000 WITH TEXT-076.
+*          LEAVE LIST-PROCESSING.
+*        ENDIF.
+*      ENDLOOP.
+*    ENDIF.
+*  ENDIF.
+*  IF s_rrf_no IS NOT INITIAL.
+*    SELECT company_code, rrf_no FROM /kgo/fi_mf_rrfh
+*      INTO TABLE @DATA(lt_validate4)
+*      WHERE rrf_no IN @s_rrf_no.
+*    IF sy-subrc <> 0.
+*      MESSAGE i000 WITH TEXT-084.
+*      LEAVE LIST-PROCESSING.
+*    ELSE.
+*      LOOP AT lt_validate4 ASSIGNING FIELD-SYMBOL(<lfs_validate4>).
+*        IF p_bukrs NE <lfs_validate4>-company_code.
+*          MESSAGE i000 WITH TEXT-077.
+*          LEAVE LIST-PROCESSING.
+*        ENDIF.
+*      ENDLOOP.
+*    ENDIF.
+*  ENDIF.
+*  IF s_budat IS NOT INITIAL.
+*    SELECT company_code, posting_date FROM /kgo/fi_mf_brfl
+*     INTO TABLE @DATA(lt_validate5)
+*     WHERE company_code = @p_bukrs
+*     AND posting_date IN @s_budat.
+*    IF sy-subrc <> 0.
+*      MESSAGE i000 WITH TEXT-078.
+*      LEAVE LIST-PROCESSING.
+**      ELSE.
+**        LOOP AT lt_validate5 ASSIGNING FIELD-SYMBOL(<lfs_validate5>).
+**        IF p_bukrs NE <lfs_validate5>-company_code.
+**             MESSAGE i000 WITH TEXT-078.
+**             LEAVE LIST-PROCESSING.
+**        ENDIF.
+**        ENDLOOP.
+*    ENDIF.
+*  ENDIF.
+*End of Change for validation By ABHISHEKB on 29/09/2021
+
+*To fetch all attachments of the BRF from /kgo/fi_mf_att table.
+  SELECT a~company_code, a~brf_no, a~requesting_mf, a~global_cc, a~process_grp, a~member_firm, a~cc_short_desc,
+    a~transaction_type, a~landx, a~atten_brf_email AS atten_brf,
+    a~sap_code_mf AS entity, a~entity_name, a~curr1 AS currency, a~details_description_of_servic AS inv_desc,
+    a~addl_cc_emails AS addl_mail, a~fi_doc_no, a~invoice_status, b~rrf_no, h~gjahr," b~gjahr, Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+    c~cop_loa, c~filename, c~value,
+    d~wrbtr AS inv_amt, "DMBTR changed to WRBTR for INC01514362 by MARINAHOTA on 28/04/2021 "e~adrnr, f~smtp_addr, Commented for INC01495550 by MARINAHOTA on 14/04/2021
+    h~budat AS inv_date, h~xblnr, "Added for INC01399209 by MARINAHOTA on 28/01/2021
+    h~bstat AS doc_stat INTO TABLE @DATA(gt_final1)
+   FROM /kgo/fi_mf_brfl AS a INNER JOIN /kgo/fi_mf_brfh AS b
+  ON b~company_code = a~company_code
+  AND b~brf_no = a~brf_no
+  LEFT OUTER JOIN bseg AS d
+  ON a~company_code = d~bukrs
+  AND a~fi_doc_no = d~belnr
+*  AND b~gjahr = d~gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND d~koart = 'D'
+  LEFT OUTER JOIN bkpf AS h
+  ON a~company_code = h~bukrs
+  AND a~fi_doc_no = h~belnr
+*  AND b~gjahr = h~gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  LEFT OUTER JOIN kna1 AS e
+  ON a~sap_code_mf = e~kunnr
+*Start of change for INC01495550 by MARINAHOTA on 14/04/2021
+*  LEFT OUTER JOIN adr6 AS f
+*  ON e~adrnr = f~addrnumber
+*End of change for INC01495550 by MARINAHOTA on 14/04/2021
+  LEFT OUTER JOIN /kgo/fi_mf_att AS c
+  ON a~company_code = c~company_code
+  AND a~brf_no = c~rrf_no
+  AND a~requesting_mf = c~requesting_mf
+  AND a~global_cc = c~global_cc
+  AND a~process_grp = c~process_grp
+  AND c~cop_loa NE @lc_con
+  AND a~transaction_type = c~transaction_type
+  AND a~member_firm = c~member_firm
+  WHERE a~company_code = @p_bukrs
+  AND a~brf_no IN @s_brf_no
+  AND a~requesting_mf IN @s_mf
+  AND a~global_cc IN @s_cc
+  AND a~process_grp IN @s_pgrp
+  AND a~fi_doc_no IN @s_doc_no
+  AND a~member_firm IN @s_member
+  AND b~rrf_no IN @s_rrf_no
+*  AND b~gjahr = @p_gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND h~gjahr = @p_gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND h~budat IN @s_budat
+ ORDER BY a~company_code, a~brf_no, a~requesting_mf, a~global_cc,a~process_grp, a~member_firm, a~cc_short_desc, a~transaction_type.
+
+
+*To fetch all attachments of the RRF of the corresponding BRFs as /kgo/fi_mf_att table stores attachments of both RRF & BRF.
+  SELECT a~company_code, a~brf_no, a~requesting_mf, a~global_cc, a~process_grp, a~member_firm, a~cc_short_desc,
+    a~transaction_type, a~landx, a~atten_brf_email AS atten_brf,
+    a~sap_code_mf AS entity, a~entity_name, a~curr1 AS currency, a~details_description_of_servic AS inv_desc,
+    a~addl_cc_emails AS addl_mail, a~fi_doc_no, a~invoice_status, b~rrf_no, g~gjahr, " b~gjahr, Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+     c~cop_loa, c~filename,
+    c~value, d~wrbtr AS inv_amt, "DMBTR changed to WRBTR for INC01514362 by MARINAHOTA on 28/04/2021 "e~adrnr, f~smtp_addr, Commented for INC01495550 by MARINAHOTA on 14/04/2021
+    g~budat AS inv_date, g~xblnr, "Added for INC01399209 by MARINAHOTA on 28/01/2021
+    g~bstat AS doc_stat APPENDING CORRESPONDING FIELDS OF TABLE @gt_final1
+   FROM /kgo/fi_mf_brfl AS a INNER JOIN /kgo/fi_mf_brfh AS b
+  ON b~company_code = a~company_code
+  AND b~brf_no = a~brf_no
+  INNER JOIN /kgo/fi_mf_att AS c
+  ON c~company_code = a~company_code
+  AND c~rrf_no = b~rrf_no
+  AND c~requesting_mf = a~requesting_mf
+  AND c~global_cc = a~global_cc
+  AND c~process_grp = a~process_grp
+  AND c~transaction_type = a~transaction_type
+  AND c~member_firm = a~member_firm
+  AND c~cop_loa NE @lc_con
+  LEFT OUTER JOIN bseg AS d
+  ON a~company_code = d~bukrs
+  AND a~fi_doc_no = d~belnr
+*  AND b~gjahr = d~gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND d~koart = 'D'
+  LEFT OUTER JOIN bkpf AS g
+  ON a~company_code = g~bukrs
+  AND a~fi_doc_no = g~belnr
+*  AND b~gjahr = g~gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  LEFT OUTER JOIN kna1 AS e
+  ON a~sap_code_mf = e~kunnr
+*Start of change for INC01495550 by MARINAHOTA on 14/04/2021
+*  LEFT OUTER JOIN adr6 AS f
+*  ON e~adrnr = f~addrnumber
+*End of change for INC01495550 by MARINAHOTA on 14/04/2021
+  WHERE a~company_code = @p_bukrs
+  AND a~brf_no IN @s_brf_no
+  AND a~requesting_mf IN @s_mf
+  AND a~global_cc IN @s_cc
+  AND a~process_grp IN @s_pgrp
+  AND a~fi_doc_no IN @s_doc_no
+  AND a~member_firm IN @s_member
+  AND b~rrf_no IN @s_rrf_no
+*  AND b~gjahr = @p_gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND g~gjahr = @p_gjahr " Changes by Subhadip because of production issue for fiscal year || 12-11-2021 || TR  D49K909839
+  AND g~budat IN @s_budat
+  ORDER BY a~company_code, a~brf_no, a~requesting_mf, a~global_cc,a~process_grp, a~member_firm, a~cc_short_desc, a~transaction_type.
+
+  IF gt_final1 IS NOT INITIAL.
+    DELETE ADJACENT DUPLICATES FROM gt_final1 COMPARING ALL FIELDS.
+    IF gt_final1 IS INITIAL.
+      MESSAGE i000 WITH TEXT-009.
+      LEAVE LIST-PROCESSING.
+
+    ELSE.
+
+      DATA(lt_final1) = gt_final1.
+      SORT lt_final1 BY company_code fi_doc_no gjahr.
+      DELETE ADJACENT DUPLICATES FROM lt_final1 COMPARING company_code fi_doc_no gjahr.
+      DELETE lt_final1 WHERE doc_stat = 'V'.  "To remove parked/draft documents from the list
+      DELETE gt_final1 WHERE value IS INITIAL. " Remove the entries where no attachments were selected
+
+      LOOP AT lt_final1 INTO DATA(ls_final1).
+        IF ls_final1-fi_doc_no IS NOT INITIAL.
+          ls_bkorm-event = 'SAPPL'.
+          ls_bkorm-bukrs = ls_final1-company_code.
+          ls_bkorm-belnr = ls_final1-fi_doc_no.
+          ls_bkorm-gjahr = ls_final1-gjahr.
+          APPEND ls_bkorm TO lt_bkorm.
+
+*Start of code changes by Subhadip Mondal
+
+          s_belnr-sign = 'I'.
+          s_belnr-option = 'EQ'.
+          s_belnr-low = ls_final1-fi_doc_no.
+          s_belnr-high = ''.
+
+          APPEND s_belnr.  "s_belnr holds only posted documents
+          CLEAR: s_belnr, ls_final1.
+*End of code changes by Subhadip Mondal
+        ENDIF.
+      ENDLOOP.
+
+*Generate a Correspondence PDF request
+      IF lt_bkorm IS NOT INITIAL.
+        MODIFY bkorm FROM TABLE lt_bkorm.
+        IF sy-subrc = 0.
+          COMMIT WORK.
+        ENDIF.
+      ENDIF.
+*To execute the RFKORD30_PDF report to generate the correspondence PDFs
+      IF s_belnr[] IS NOT INITIAL.
+        EXPORT lv_commit_flag TO MEMORY ID 'COMMIT'.
+        SUBMIT (lv_progn) AND RETURN    "Program Name : RFKORD30_PDF
+                    WITH sortvk     = 'B1'
+                    WITH dspras     = '3'
+                    WITH rbukrs     =  p_bukrs
+                    WITH revent     =  'SAPPL'
+                    WITH rbelnr     IN  s_belnr
+                    WITH rgjahr     =  p_gjahr
+                    WITH rxbkor     =  'X'
+                    WITH rsimul     =  'X'
+                    WITH rxtsub     =  'X'
+                    WITH tddest     =  'LP01'.
+      ENDIF.
+*Start of code changes by Subhadip Mondal
+
+*Fetching the Correspondence output PDFs
+
+      IF s_belnr[] IS NOT INITIAL.   "If no posted documents exist, select query won't be hit
+        SELECT bukrs, belnr, gjahr, cop_loa, filename, value
+         FROM /kgo/fi_ar_invce
+         INTO TABLE @DATA(lt_output)
+         WHERE bukrs EQ @p_bukrs
+           AND belnr IN @s_belnr
+           AND gjahr EQ @p_gjahr
+           ORDER BY bukrs, gjahr, belnr.
+        IF sy-subrc = 0 AND lt_output IS NOT INITIAL.
+
+        ENDIF.
+      ENDIF.
+
+*End of code changes by Subhadip Mondal
+
+    ENDIF.
+  ELSE.
+    MESSAGE i000 WITH TEXT-009.
+    LEAVE LIST-PROCESSING.
+
+  ENDIF.
+
+  CLEAR: gv_sender.
+  SELECT SINGLE low INTO gv_sender FROM tvarvc
+                  WHERE name = '/KGO/COMMIT_CORR_SENDER_MAIL'
+                    AND type = 'P'.
+  IF sy-subrc = 0 AND gv_sender IS NOT INITIAL.
+    CALL METHOD /kgo/fi_ar_utility=>email_to_uname
+      EXPORTING
+        im_email = gv_sender
+      IMPORTING
+        ex_name  = gv_uname.
+  ENDIF.
+
+*Populating final table with Commit attachements
+  IF gt_final1 IS NOT INITIAL.
+    LOOP AT gt_final1 INTO ls_final1.
+      MOVE-CORRESPONDING ls_final1 TO gs_final.
+      APPEND gs_final TO gt_final.
+      CLEAR: ls_final1, gs_final.
+    ENDLOOP.
+  ENDIF.
+
+*Populating final table with Correspondence output PDFs
+  LOOP AT lt_final1 INTO DATA(ls_value).
+    gs_final-company_code = ls_value-company_code.
+    gs_final-brf_no = ls_value-brf_no.
+    gs_final-rrf_no = ls_value-rrf_no.
+    gs_final-requesting_mf = ls_value-requesting_mf.
+    gs_final-global_cc = ls_value-global_cc.
+    gs_final-process_grp = ls_value-process_grp.
+    gs_final-member_firm = ls_value-member_firm.
+    gs_final-transaction_type = ls_value-transaction_type.
+*   gs_final-adrnr = ls_value-adrnr. "Commented for INC01495550 by MARINAHOTA on 14/04/2021
+    gs_final-gjahr = ls_value-gjahr.
+    gs_final-inv_amt = ls_value-inv_amt.
+    gs_final-inv_date = ls_value-inv_date.
+    gs_final-doc_stat = ls_value-doc_stat.
+    gs_final-inv_desc = ls_value-inv_desc.
+    gs_final-invoice_status = ls_value-invoice_status.
+    gs_final-landx = ls_value-landx.
+*   gs_final-smtp_addr = ls_value-smtp_addr. "Commented for INC01495550 by MARINAHOTA on 14/04/2021
+    gs_final-currency = ls_value-currency.
+    gs_final-entity = ls_value-entity.
+    gs_final-entity_name = ls_value-entity_name.
+    gs_final-atten_brf = ls_value-atten_brf.
+    gs_final-addl_mail = ls_value-addl_mail.
+    gs_final-xblnr = ls_value-xblnr.  "Added for INC01399209 by MARINAHOTA on 28/01/2021
+    IF ls_value-company_code = '9921'.
+      CONCATENATE ls_value-xblnr '_' ls_value-company_code '_' ls_value-gjahr '.pdf' INTO DATA(lv_inv_name).
+    ELSE.
+      CONCATENATE ls_value-fi_doc_no '_' ls_value-company_code '_' ls_value-gjahr '.pdf' INTO lv_inv_name.
+    ENDIF.
+
+    READ TABLE lt_output INTO DATA(ls_out) WITH KEY bukrs = ls_value-company_code
+                                                    belnr = ls_value-fi_doc_no
+                                                    gjahr = ls_value-gjahr
+                                                    filename = lv_inv_name
+                                                    BINARY SEARCH.
+    IF sy-subrc = 0.
+      gs_final-cop_loa = ls_out-cop_loa.
+      gs_final-fi_doc_no = ls_out-belnr.
+      gs_final-filename = ls_out-filename.
+      gs_final-value = ls_out-value.
+      CLEAR: ls_out.
+    ENDIF.
+    APPEND gs_final TO gt_final.
+    CLEAR: ls_value, gs_final, lv_inv_name.
+
+  ENDLOOP.
+
+  IF sy-subrc = 0 AND gt_final IS NOT INITIAL.
+    SORT gt_final BY company_code brf_no requesting_mf global_cc process_grp member_firm transaction_type gjahr fi_doc_no cop_loa filename.
+    DELETE ADJACENT DUPLICATES FROM gt_final COMPARING ALL FIELDS.
+    DELETE gt_final WHERE value IS INITIAL.
+    IF gt_final IS INITIAL.
+      MESSAGE i000 WITH TEXT-023.
+      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+
+
+  REFRESH : lt_output, lt_final1.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_CREATE_ZIP_FILE
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*      -->P_P_GT_ATT  text
+*&---------------------------------------------------------------------*
+FORM sub_create_zip_file.
+
+  DATA: lv_count TYPE sy-tabix.
+
+
+  LOOP AT gt_process INTO DATA(ls_att).
+
+    IF lo_zip IS NOT BOUND.
+      CREATE OBJECT lo_zip.
+    ENDIF.
+    gv_doc = ls_att-xblnr.  "Changed for INC01399209 by MARINAHOTA on 28/01/2021
+
+    gv_filename = ls_att-filename.
+    lo_zip->add(
+      EXPORTING
+        name           =  gv_filename   " Name (Case-Sensitive)
+        content        =  ls_att-value ).
+
+    AT END OF fi_doc_no.
+      gv_zip_content = lo_zip->save( ).
+      IF gv_zip_content IS NOT INITIAL.
+
+        CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+          EXPORTING
+            buffer        = gv_zip_content
+          IMPORTING
+            output_length = gv_len
+          TABLES
+            binary_tab    = gt_bin.
+        IF gt_bin IS NOT INITIAL.
+
+        ENDIF.
+      ENDIF.
+      PERFORM sub_download_zip_file. "Download the ZIP folder in the Application Server
+      CLEAR: lo_zip, lv_count, gv_doc, gv_filename, gv_zip_content, gv_len.
+      REFRESH: gt_bin.
+    ENDAT.
+    CLEAR: ls_att.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  PF_STATUS_SET
+*&---------------------------------------------------------------------*
+FORM pf_status_set USING rt_extab TYPE slis_t_extab.
+
+  SET PF-STATUS 'PF_STAT'.
+
+ENDFORM.                    "PF_STATUS_SET
+*&---------------------------------------------------------------------*
+*&      Form  user_command
+*&---------------------------------------------------------------------*
+FORM user_command USING ucomm TYPE sy-ucomm selfield TYPE slis_selfield.
+
+  FIELD-SYMBOLS: <ls_final> TYPE gty_final.
+  DATA: ref1     TYPE REF TO cl_gui_alv_grid,
+        lt_doc   TYPE STANDARD TABLE OF gty_doc,
+        ls_doc   TYPE gty_doc,
+        lv_email TYPE char251, "Added for INC01538357 by MARINAHOTA on 25/05/2021
+*        lv_flag1 TYPE char1, "Added by ABHISHEKB on 06/10/2021
+        lv_break TYPE char1. "Added for INC01538357 by MARINAHOTA on 25/05/2021
+
+  CONSTANTS : lc_scolon TYPE char1 VALUE ';'.
+  lv_break = cl_abap_conv_in_ce=>uccp( '00A0' ). "Added for INC01538357 by MARINAHOTA on 25/05/2021
+  "For capturing the selected data
+  CALL FUNCTION 'GET_GLOBALS_FROM_SLVC_FULLSCR'
+    IMPORTING
+      e_grid = ref1.
+  CALL METHOD ref1->check_changed_data.
+
+
+  CASE ucomm.
+    WHEN 'SEL'. "When 'Select All' button is clicked
+
+      LOOP AT gt_final ASSIGNING <ls_final>.
+        <ls_final>-flag = 'X'.
+      ENDLOOP.
+      selfield-refresh = 'X'.
+      selfield-col_stable = 'X' .
+      selfield-row_stable = 'X' .
+
+    WHEN 'DESEL'. "When 'Deselect All' button is clicked
+
+      LOOP AT gt_final ASSIGNING <ls_final>.
+        <ls_final>-flag = space.
+      ENDLOOP.
+      selfield-refresh = 'X'.
+      selfield-col_stable = 'X' .
+      selfield-row_stable = 'X' .
+
+    WHEN 'DOWN'. "When 'Download' button is clicked
+
+      selfield-refresh    = abap_true.
+      selfield-col_stable = abap_true .
+      selfield-row_stable = abap_true.
+      CLEAR: gv_zip_content, gv_len.
+      REFRESH: gt_process, gt_bin.
+      LOOP AT gt_final INTO DATA(ls_final) WHERE flag = 'X'.
+        CLEAR: gs_process.
+        MOVE-CORRESPONDING ls_final TO gs_process.
+        APPEND gs_process TO gt_process.
+
+        CLEAR: ls_final.
+      ENDLOOP.
+      DELETE gt_process WHERE fi_doc_no IS INITIAL. " Both parked/posted invoices are to be processed
+      SORT gt_process BY company_code gjahr fi_doc_no.
+
+      IF p_path IS NOT INITIAL.
+        PERFORM sub_create_zip_file. "Create the ZIP folder
+        IF gt_process IS INITIAL.
+          MESSAGE TEXT-052 TYPE 'I'.
+        ELSE.
+          MESSAGE TEXT-024 TYPE 'I'.
+        ENDIF.
+      ELSE.
+        MESSAGE TEXT-056 TYPE 'I'.
+      ENDIF.
+
+      REFRESH: gt_bin, gt_process.
+
+
+    WHEN 'ZIP'. "When 'Mail' button is clicked
+
+      selfield-refresh    = abap_true.
+      selfield-col_stable = abap_true .
+      selfield-row_stable = abap_true.
+      CLEAR: gv_zip_content, gv_len.
+      REFRESH: gt_process, gt_bin, gt_recpt.
+
+      LOOP AT gt_final INTO ls_final WHERE flag = 'X'.
+        CLEAR: gs_process.
+        MOVE-CORRESPONDING ls_final TO gs_process.
+
+        APPEND gs_process TO gt_process.
+        CLEAR: ls_final, gs_process.
+      ENDLOOP.
+
+      DELETE gt_process WHERE invoice_status NE 'POSTED'. " Only posted invoices are to be processed
+      DELETE gt_process WHERE entity IS INITIAL.
+
+      IF gt_process IS NOT INITIAL.
+
+        LOOP AT gt_process INTO gs_process.
+          MOVE-CORRESPONDING gs_process TO ls_doc.
+          APPEND ls_doc TO lt_doc.
+
+*Start of change for multiple recipient mail
+*Start of change for segregating 'TO' & 'CC' recipients by MARINAHOTA on 13/01/2021
+*Start of comment for INC01495550 by MARINAHOTA on 14/04/2021
+*          IF gs_process-smtp_addr IS NOT INITIAL.
+*            TRANSLATE gs_process-smtp_addr TO UPPER CASE.
+*            CONDENSE gs_process-smtp_addr.
+*            gs_recpt-company_code = gs_process-company_code.
+*            gs_recpt-gjahr = gs_process-gjahr.
+*            gs_recpt-fi_doc_no = gs_process-fi_doc_no.
+*            gs_recpt-addl_cc_emails = gs_process-smtp_addr.
+*
+*            APPEND gs_recpt TO gt_recpt.
+*            CLEAR gs_recpt.
+*          ENDIF.
+*End of comment for INC01495550 by MARINAHOTA on 14/04/2021
+*End of change for segregating 'TO' & 'CC' recipients by MARINAHOTA on 13/01/2021
+          IF gs_process-atten_brf IS NOT INITIAL.
+            TRANSLATE gs_process-atten_brf TO UPPER CASE.
+            CONDENSE gs_process-atten_brf NO-GAPS. "Changed for INC01538357 by MARINAHOTA on 25/05/2021
+            gs_recpt-company_code = gs_process-company_code.
+            gs_recpt-gjahr = gs_process-gjahr.
+            gs_recpt-fi_doc_no = gs_process-fi_doc_no.
+            gs_recpt-addl_cc_emails = gs_process-atten_brf.
+
+            APPEND gs_recpt TO gt_recpt.
+            CLEAR gs_recpt.
+          ENDIF.
+
+          IF gs_process-addl_mail IS NOT INITIAL .
+            SPLIT gs_process-addl_mail AT lc_scolon INTO TABLE DATA(lt_addl_mail).
+            IF lt_addl_mail IS NOT INITIAL.
+              LOOP AT lt_addl_mail INTO DATA(lv_addl_mail).
+                TRANSLATE lv_addl_mail TO UPPER CASE.
+*Start of change for INC01538357 by MARINAHOTA on 25/05/2021
+                lv_email = lv_addl_mail.
+                WHILE lv_email CS lv_break.
+                  lv_email+sy-fdpos(1) = space.
+                ENDWHILE.
+*End of change for INC01538357 by MARINAHOTA on 25/05/2021
+                CONDENSE lv_email NO-GAPS. "Changed for INC01538357 by MARINAHOTA on 25/05/2021
+                gs_recpt-company_code = gs_process-company_code.
+                gs_recpt-gjahr = gs_process-gjahr.
+                gs_recpt-fi_doc_no = gs_process-fi_doc_no.
+                gs_recpt-addl_cc_emails = lv_email. "Changed for INC01538357 by MARINAHOTA on 25/05/2021
+
+                APPEND gs_recpt TO gt_recpt.
+                CLEAR : gs_recpt,lv_addl_mail.
+              ENDLOOP.
+            ENDIF.
+          ENDIF.
+*End of change for multiple recipient mail
+          CLEAR: ls_doc, gs_process.
+        ENDLOOP.
+
+*Start of change for multiple recipient mail
+        IF gt_recpt IS NOT INITIAL.
+          SORT gt_recpt BY company_code gjahr fi_doc_no addl_cc_emails.
+          DELETE ADJACENT DUPLICATES FROM gt_recpt COMPARING ALL FIELDS.
+        ENDIF.
+*End of change for multiple recipient mail
+
+        IF lt_doc IS NOT INITIAL.
+          SORT lt_doc BY company_code fi_doc_no gjahr.
+          DELETE ADJACENT DUPLICATES FROM lt_doc COMPARING ALL FIELDS.
+
+          SELECT bukrs, belnr, gjahr, filename, cop_loa, sent
+            FROM /kgo/fi_ar_invce
+            INTO TABLE @DATA(lt_inv)
+            FOR ALL ENTRIES IN @lt_doc
+            WHERE bukrs = @lt_doc-company_code
+            AND belnr = @lt_doc-fi_doc_no
+            AND gjahr = @lt_doc-gjahr
+            AND sent = 'X'.
+          IF sy-subrc = 0 AND lt_inv IS NOT INITIAL.
+            SORT lt_inv BY bukrs belnr gjahr.
+            LOOP AT lt_doc INTO ls_doc.
+*              CLEAR lv_flag1.    "Added by ABHISHEKB on 06/10/2021
+              READ TABLE lt_inv INTO DATA(ls_inv) WITH KEY bukrs = ls_doc-company_code
+                                                           belnr = ls_doc-fi_doc_no
+                                                           gjahr = ls_doc-gjahr
+                                                           BINARY SEARCH.
+              IF sy-subrc = 0.
+*                DATA(lv_fi_doc_no) = ls_doc-fi_doc_no.
+                DELETE gt_process WHERE ( company_code = ls_inv-bukrs AND
+                                          fi_doc_no = ls_inv-belnr AND
+                                          gjahr = ls_inv-gjahr AND
+                                          cop_loa = ls_inv-cop_loa ).
+*                DELETE lt_doc WHERE ( company_code = ls_inv-bukrs AND
+*                                          fi_doc_no = ls_inv-belnr AND
+*                                          gjahr = ls_inv-gjahr ).
+*                lv_flag1 = abap_true.   "Added by ABHISHEKB on 06/10/2021
+*                IF lv_flag1 IS NOT INITIAL. "Added by ABHISHEKB on 06/10/2021
+*                  CONCATENATE TEXT-086 lv_fi_doc_no TEXT-087 INTO DATA(lv_msg_inv) SEPARATED BY space.
+*                  MESSAGE lv_msg_inv TYPE 'I'.
+*                  DATA(lv_flag) = abap_true.
+*                ENDIF. "Added by ABHISHEKB on 06/10/2021
+                IF gt_process IS INITIAL.
+                  MESSAGE TEXT-027 TYPE 'I'.
+                  DATA(lv_flag) = abap_true.
+                ENDIF.
+
+                CLEAR: ls_inv.
+              ENDIF.
+              CLEAR: gs_process.",lv_fi_doc_no.
+            ENDLOOP.
+          ENDIF.
+
+          SORT gt_process BY company_code gjahr fi_doc_no.
+        ENDIF.
+      ENDIF.
+*  Begin of changes by ABHISHEKB on 06/10/2021
+*      IF gt_process IS NOT INITIAL.
+*        LOOP AT lt_doc INTO DATA(ls_doc1).
+*          READ TABLE gt_process INTO DATA(gs_process1) WITH KEY company_code = ls_doc1-company_code
+*                                                           fi_doc_no = ls_doc1-fi_doc_no
+*                                                           gjahr = ls_doc1-gjahr
+*                                                           BINARY SEARCH.
+*          IF gs_process1-cop_loa NE 'BRF'.
+*            CONCATENATE TEXT-088 ls_doc1-fi_doc_no TEXT-089 INTO DATA(lv_brf_msg) SEPARATED BY space.
+*            DELETE gt_process WHERE ( company_code = ls_doc1-company_code AND
+*                                          fi_doc_no = ls_doc1-fi_doc_no AND
+*                                          gjahr = ls_doc1-gjahr ).
+*            DELETE lt_doc WHERE ( company_code = ls_doc1-company_code AND
+*                                          fi_doc_no = ls_doc1-fi_doc_no AND
+*                                          gjahr = ls_doc1-gjahr ).
+*            MESSAGE lv_brf_msg TYPE 'I'.
+*          ENDIF.
+*        ENDLOOP.
+*        SORT gt_process BY company_code gjahr fi_doc_no.
+*      ENDIF.
+*End of changes by ABHISHEKB on 06/10/2021
+      PERFORM sub_send_mail. "Send Mail with the ZIP folder as attachment
+      IF gt_process IS INITIAL AND lv_flag IS INITIAL.
+        MESSAGE TEXT-051 TYPE 'I'.
+*      IF gt_process IS NOT INITIAL.
+      ELSEIF gt_process IS NOT INITIAL AND lv_flag IS INITIAL.
+        MESSAGE TEXT-025 TYPE 'I'.
+      ENDIF.
+      CLEAR: gv_zip_content, gv_len.
+      REFRESH: gt_bin, gt_process, lt_doc, gt_recpt.
+
+
+    WHEN OTHERS.
+  ENDCASE.
+
+ENDFORM.                    "user_command
+*&---------------------------------------------------------------------*
+*& Form SUB_DISPLAY_ALV
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_display_alv .
+
+  PERFORM sub_field_catalogue.
+
+  gs_layout-colwidth_optimize = abap_true.
+  gs_layout-zebra = abap_true.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program       = sy-cprog
+      i_callback_pf_status_set = 'PF_STATUS_SET'
+      i_callback_user_command  = 'USER_COMMAND'
+      it_fieldcat              = gt_fcat
+      is_layout                = gs_layout
+    TABLES
+      t_outtab                 = gt_final
+    EXCEPTIONS
+      program_error            = 1
+      OTHERS                   = 2.
+  IF sy-subrc <> 0.
+    MESSAGE TEXT-022 TYPE 'E' DISPLAY LIKE 'I'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_FIELD_CATALOGUE
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_field_catalogue .
+
+  CONSTANTS: lc_bukrs     TYPE char12  VALUE 'COMPANY_CODE',
+             lc_gjahr     TYPE char5   VALUE 'GJAHR',
+             lc_brf       TYPE char6   VALUE 'BRF_NO',
+             lc_mf        TYPE char13  VALUE 'REQUESTING_MF',
+             lc_cc        TYPE char9   VALUE 'GLOBAL_CC',
+             lc_pgrp      TYPE char11  VALUE 'PROCESS_GRP',
+             lc_member    TYPE char11  VALUE 'MEMBER_FIRM',
+             lc_trans     TYPE char16  VALUE 'TRANSACTION_TYPE',
+             lc_doc_no    TYPE char9   VALUE 'FI_DOC_NO',
+             lc_xblnr     TYPE char5   VALUE 'XBLNR',  "Added for INC01399209 by MARINAHOTA on 28/01/2021
+             lc_status    TYPE char14  VALUE 'INVOICE_STATUS',
+             lc_stat      TYPE char8   VALUE 'DOC_STAT',
+             lc_rrf       TYPE char6   VALUE 'RRF_NO',
+             lc_indicatr  TYPE char7   VALUE 'COP_LOA',
+             lc_fname     TYPE char8   VALUE 'FILENAME',
+             lc_fvalue    TYPE char5   VALUE 'VALUE',
+             lc_flag      TYPE char4   VALUE 'FLAG',
+             lc_entity    TYPE char6   VALUE 'ENTITY',
+             lc_ename     TYPE char11  VALUE 'ENTITY_NAME',
+             lc_adrnr     TYPE char5   VALUE 'ADRNR',
+             lc_cmail     TYPE char9   VALUE 'SMTP_ADDR',
+             lc_landx     TYPE char5   VALUE 'LANDX',
+             lc_budat     TYPE char5   VALUE 'BUDAT',
+             lc_dmbtr     TYPE char5   VALUE 'DMBTR',
+             lc_curr      TYPE char5   VALUE 'WAERS',
+             lc_desc      TYPE char29  VALUE 'DETAILS_DESCRIPTION_OF_SERVIC',
+             lc_table     TYPE char8   VALUE 'GT_FINAL',
+             lc_atten_brf TYPE char15 VALUE 'ATTEN_BRF',
+             lc_addl_mail TYPE char14 VALUE 'ADDL_MAIL'.
+
+
+  gv_pos = 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_flag.
+  gs_fcat-seltext_l = TEXT-021.
+  gs_fcat-checkbox = 'X'.
+  gs_fcat-edit = 'X'.
+  gs_fcat-input = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_bukrs.
+  gs_fcat-seltext_l = TEXT-010.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_gjahr.
+  gs_fcat-seltext_l = TEXT-011.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_brf.
+  gs_fcat-seltext_l = TEXT-012.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_mf.
+  gs_fcat-seltext_l = TEXT-013.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_cc.
+  gs_fcat-seltext_l = TEXT-014.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_pgrp.
+  gs_fcat-seltext_l = TEXT-015.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_member.
+  gs_fcat-seltext_l = TEXT-060.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_trans.
+  gs_fcat-seltext_l = TEXT-062.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_doc_no.
+  gs_fcat-seltext_l = TEXT-016.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+*Start of change for INC01399209 by MARINAHOTA on 28/01/2021
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_xblnr.
+  gs_fcat-seltext_l = TEXT-059.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+*End of change for INC01399209 by MARINAHOTA on 28/01/2021
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_status.
+  gs_fcat-seltext_l = TEXT-050.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_stat.
+  gs_fcat-seltext_l = TEXT-063.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_rrf.
+  gs_fcat-seltext_l = TEXT-017.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_indicatr.
+  gs_fcat-seltext_l = TEXT-018.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_fname.
+  gs_fcat-seltext_l = TEXT-019.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_entity.
+  gs_fcat-seltext_l = TEXT-029.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_ename.
+  gs_fcat-seltext_l = TEXT-030.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+*Start of change for INC01495550 by MARINAHOTA on 14/04/2021
+*  gv_pos = gv_pos + 1.
+*  gs_fcat-col_pos = gv_pos .
+*  gs_fcat-fieldname = lc_cmail.
+*  gs_fcat-seltext_l = TEXT-032.
+*  gs_fcat-tabname = lc_table.
+*  APPEND gs_fcat TO gt_fcat .
+*  CLEAR gs_fcat.
+*End of change for INC01495550 by MARINAHOTA on 14/04/2021
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_atten_brf.
+  gs_fcat-seltext_l = TEXT-057.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_addl_mail.
+  gs_fcat-seltext_l = TEXT-058.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_landx.
+  gs_fcat-seltext_l = TEXT-033.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+*Start of change for INC01495550 by MARINAHOTA on 14/04/2021
+*  gv_pos = gv_pos + 1.
+*  gs_fcat-col_pos = gv_pos .
+*  gs_fcat-fieldname = lc_adrnr.
+*  gs_fcat-seltext_l = TEXT-031.
+*  gs_fcat-no_out = 'X'.
+*  gs_fcat-tabname = lc_table.
+*  APPEND gs_fcat TO gt_fcat .
+*  CLEAR gs_fcat.
+*End of change for INC01495550 by MARINAHOTA on 14/04/2021
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_fvalue.
+  gs_fcat-seltext_l = TEXT-020.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_budat.
+  gs_fcat-seltext_l = TEXT-034.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_dmbtr.
+  gs_fcat-seltext_l = TEXT-035.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_curr.
+  gs_fcat-seltext_l = TEXT-036.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+  gv_pos = gv_pos + 1.
+  gs_fcat-col_pos = gv_pos .
+  gs_fcat-fieldname = lc_desc.
+  gs_fcat-seltext_l = TEXT-037.
+  gs_fcat-no_out = 'X'.
+  gs_fcat-tabname = lc_table.
+  APPEND gs_fcat TO gt_fcat .
+  CLEAR gs_fcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_BUKRS
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_bukrs .
+
+  CONSTANTS: lc_sh_bukrs TYPE dfies-fieldname VALUE 'BUKRS'.
+
+  TYPES: BEGIN OF lty_sh_bukrs,
+           bukrs TYPE bukrs,
+           butxt TYPE  butxt,
+         END OF lty_sh_bukrs.
+
+  DATA: lt_sh_bukrs TYPE STANDARD TABLE OF lty_sh_bukrs.
+
+
+  SELECT bukrs butxt
+  FROM t001
+  INTO TABLE lt_sh_bukrs.
+
+  IF sy-subrc = 0 AND lt_sh_bukrs IS NOT INITIAL.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_bukrs
+        value_org       = 'S'
+        window_title    = 'Company Code'
+      TABLES
+        value_tab       = lt_sh_bukrs[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        p_bukrs = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_bukrs[].
+  ENDIF.
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_INV
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_inv .
+
+  TYPES: BEGIN OF lty_sh_doc,
+           fi_doc_no TYPE belnr_d,
+         END OF lty_sh_doc.
+
+  CONSTANTS: lc_sh_doc   TYPE dfies-fieldname VALUE 'FI_DOC_NO'.
+
+  DATA: lt_sh_doc   TYPE STANDARD TABLE OF lty_sh_doc.
+
+  SELECT fi_doc_no
+    FROM /kgo/fi_mf_brfl
+    INTO TABLE lt_sh_doc
+    WHERE fi_doc_no NE ''
+    ORDER BY fi_doc_no.
+
+  IF sy-subrc = 0 AND lt_sh_doc IS NOT INITIAL.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_doc
+        value_org       = 'S'
+        window_title    = 'Invoice Document No.'
+      TABLES
+        value_tab       = lt_sh_doc[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        s_doc_no-low = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_doc[].
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_KOSTL
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_kostl .
+
+  TYPES:BEGIN OF lty_sh_cc,
+          kostl TYPE kostl,
+          ltext TYPE kltxt,
+        END OF lty_sh_cc.
+
+  CONSTANTS: lc_sh_cc    TYPE dfies-fieldname VALUE 'KOSTL'.
+
+  DATA: lt_sh_cc    TYPE STANDARD TABLE OF lty_sh_cc.
+
+  SELECT kostl ltext
+   FROM cskt
+   INTO TABLE lt_sh_cc
+   WHERE spras = sy-langu
+   AND   kokrs = 'KPMG'
+   ORDER BY kostl.
+
+  IF sy-subrc = 0 AND lt_sh_cc IS NOT INITIAL.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_cc
+        value_org       = 'S'
+        window_title    = 'Cost Center'
+      TABLES
+        value_tab       = lt_sh_cc[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        s_cc-low = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_cc[].
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_RRF
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_rrf .
+
+  TYPES: BEGIN OF lty_sh_rrf,
+           rrf_no TYPE /kgo/fi_req_no,
+         END OF lty_sh_rrf.
+
+  CONSTANTS :lc_sh_rrf   TYPE dfies-fieldname VALUE 'RRF_NO'.
+
+  DATA: lt_sh_rrf   TYPE STANDARD TABLE OF lty_sh_rrf.
+
+  SELECT rrf_no
+    FROM /kgo/fi_rrf_hist
+    INTO TABLE lt_sh_rrf.
+
+  IF sy-subrc = 0 AND lt_sh_rrf IS NOT INITIAL.
+    SORT lt_sh_rrf BY rrf_no DESCENDING.
+    DELETE ADJACENT DUPLICATES FROM lt_sh_rrf COMPARING ALL FIELDS.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_rrf
+        value_org       = 'S'
+        window_title    = 'RRF Number'
+      TABLES
+        value_tab       = lt_sh_rrf[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        s_rrf_no-low = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_rrf[].
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_BRF
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_brf .
+
+  TYPES: BEGIN OF lty_sh_brf,
+           brf_no TYPE /kgo/fi_brf_no,
+         END OF lty_sh_brf.
+
+
+  CONSTANTS :lc_sh_brf   TYPE dfies-fieldname VALUE 'BRF_NO'.
+
+  DATA: lt_sh_brf   TYPE STANDARD TABLE OF lty_sh_brf.
+
+  SELECT brf_no
+   FROM /kgo/fi_mf_brfh
+   INTO TABLE lt_sh_brf
+   WHERE brf_no LIKE 'BR%'
+   ORDER BY brf_no.
+
+  IF sy-subrc = 0 AND lt_sh_brf IS NOT INITIAL.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_brf
+        value_org       = 'S'
+        window_title    = 'BRF Number'
+      TABLES
+        value_tab       = lt_sh_brf[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        s_brf_no-low = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_brf[].
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_F4_MF
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_f4_mf .
+
+  TYPES:BEGIN OF lty_sh_mf,
+          land1 TYPE land1,
+          landx TYPE landx,
+        END OF lty_sh_mf.
+
+  CONSTANTS: lc_sh_mf    TYPE dfies-fieldname VALUE 'LAND1'.
+
+  DATA: lt_sh_mf    TYPE STANDARD TABLE OF lty_sh_mf.
+
+  SELECT land1 landx
+   FROM t005t
+   INTO TABLE lt_sh_mf
+   WHERE spras = sy-langu.
+
+  IF sy-subrc = 0 AND lt_sh_mf IS NOT INITIAL.
+
+    CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+      EXPORTING
+        retfield        = lc_sh_mf
+        value_org       = 'S'
+        window_title    = 'Requesting MF'
+      TABLES
+        value_tab       = lt_sh_mf[]
+        return_tab      = gt_ret[]
+      EXCEPTIONS
+        parameter_error = 1
+        no_values_found = 2
+        OTHERS          = 3.
+    IF sy-subrc = 0 AND gt_ret IS NOT INITIAL.
+
+      CLEAR gs_ret.
+      READ TABLE gt_ret INTO gs_ret INDEX 1.
+      IF sy-subrc EQ 0.
+        s_mf-low = gs_ret-fieldval.
+      ENDIF.
+    ENDIF.
+    REFRESH : lt_sh_mf[].
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form F4_GETFILE
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*      <--P_P_PATH  text
+*&---------------------------------------------------------------------*
+FORM f4_getfile  CHANGING p_p_path TYPE any.
+
+  CONSTANTS: lc_sl TYPE char1 VALUE '\'.
+
+  DATA: lv_path  TYPE string,
+        lv_var1  TYPE i,
+        lv_var2  TYPE i,
+        lv_title TYPE string,
+        lv_char  TYPE string.
+
+  lv_title = TEXT-055.
+  CALL METHOD cl_gui_frontend_services=>directory_browse
+    EXPORTING
+      window_title         = lv_title
+    CHANGING
+      selected_folder      = p_p_path
+    EXCEPTIONS
+      cntl_error           = 1
+      error_no_gui         = 2
+      not_supported_by_gui = 3
+      OTHERS               = 4.
+
+  CALL METHOD cl_gui_cfw=>flush.
+
+
+ENDFORM.
